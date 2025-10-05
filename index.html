@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>3D Satellite Data Explorer (Token-Free)</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    
+    <link href='https://api.mapbox.com/mapbox-gl-js/v3.4.0/mapbox-gl.css' rel='stylesheet' />
+    
+    <style>
+        /* (CSS is the same as the previous version) */
+        body { font-family: sans-serif; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; background-color: #333; color: #eee; }
+        h1 { padding: 10px; margin: 0; background-color: #007bff; color: white; }
+        #container { display: flex; flex: 1; }
+        #map { flex: 3; height: 100%; }
+        #controls { flex: 1; max-width: 400px; padding: 20px; background-color: #444; overflow-y: auto; border-left: 5px solid #007bff; }
+        .input-group label { display: block; margin-top: 10px; font-weight: bold; color: #fff; }
+        .input-group input, button { width: 100%; padding: 8px; box-sizing: border-box; margin-top: 5px; font-size: 14px; }
+        button { background-color: #007bff; color: white; border: none; cursor: pointer; transition: background-color 0.3s; }
+        button:hover { background-color: #0056b3; }
+        
+        #results-box { 
+            margin-top: 20px; 
+            padding: 15px; 
+            border: 1px solid #007bff; 
+            background-color: #333;
+            min-height: 250px;
+            color: #fff;
+        }
+        .location-result {
+            margin-bottom: 15px;
+            padding: 10px;
+            border: 1px solid #555;
+            background-color: #2a2a2a;
+            border-radius: 5px;
+        }
+        .error { color: #ff6666; font-weight: bold; }
+        .data-label { font-weight: bold; color: #66ccff; }
+        
+        /* Custom Marker CSS for Satellite Beam effect */
+        .beam-marker {
+            width: 15px;
+            height: 15px;
+            background-color: red;
+            border-radius: 50%;
+            border: 3px solid #ff00ff;
+            box-shadow: 0 0 10px #ff00ff;
+            transition: all 0.5s;
+        }
+    </style>
+    
+    <script src='https://api.mapbox.com/mapbox-gl-js/v3.4.0/mapbox-gl.js'></script>
+</head>
+<body>
+
+    <h1>🛰️ 3D Satellite Data Explorer (Token-Free)</h1>
+    
+    <div id="container">
+        
+        <div id="controls">
+            <h2>1. Target Locations</h2>
+            <p>Enter coordinates (Lat,Lon) or a location name (e.g., Paris).</p>
+            <div class="input-group">
+                <label for="locationInput">Examples: 40.71,-74.01; London</label>
+                <input type="text" id="locationInput" value="34.05,-118.24; London, UK; New York City" />
+            </div>
+            <button onclick="getSatelliteData()">FETCH DATA & POINT SATELLITE</button>
+
+            <h2>2. Sensor Readings</h2>
+            <div id="results-box">
+                <p>Enter a location and click 'FETCH DATA' to see results.</p>
+            </div>
+        </div>
+
+        <div id="map"></div>
+
+    </div>
+
+    <script>
+        // --- TOKEN-FREE SETUP ---
+        mapboxgl.accessToken = 'pk.mapbox-dummy-token'; 
+        // ------------------------
+
+        // --- Map Initialization ---
+        const map = new mapboxgl.Map({
+            container: 'map',
+            style: {
+                'version': 8,
+                'sources': {
+                    'osm-tiles': {
+                        'type': 'raster',
+                        'tiles': [
+                            'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                            'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                            'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'
+                        ],
+                        'tileSize': 256,
+                        'maxzoom': 18 
+                    }
+                },
+                'layers': [
+                    {
+                        'id': 'osm-layer',
+                        'type': 'raster',
+                        'source': 'osm-tiles',
+                        'minzoom': 0,
+                        'maxzoom': 22
+                    }
+                ]
+            },
+            projection: 'globe', // KEY: Activates the 3D globe view
+            zoom: 1.5,
+            center: [0, 0] // Start at center of the globe
+        });
+
+        let activeMarkers = []; 
+        let spinEnabled = true;
+
+        map.on('style.load', () => {
+            map.setFog({
+                'range': [0.8, 10],
+                'color': 'white',
+                'horizon-blend': 0.05,
+                'high-color': '#24BDE2',
+                'space-color': '#111122',
+                'star-intensity': 0.15
+            }); 
+            
+            spinGlobe();
+        });
+
+        // --- Globe Spin Logic ---
+        const secondsPerRevolution = 100;
+        let userInteracting = false;
+        
+        function spinGlobe() {
+            const zoom = map.getZoom();
+            if (spinEnabled && !userInteracting && zoom < 5) {
+                const distancePerSecond = 360 / secondsPerRevolution;
+                const center = map.getCenter();
+                center.lng -= distancePerSecond;
+                
+                map.easeTo({ center, duration: 1000, easing: (n) => n, essential: true });
+            }
+        }
+
+        map.on('mousedown', () => { userInteracting = true; });
+        map.on('mouseup', () => { userInteracting = false; spinGlobe(); });
+        map.on('dragend', () => { userInteracting = false; spinGlobe(); });
+        map.on('moveend', () => {
+             if (map.getZoom() < 5) {
+                spinGlobe();
+            } else {
+                map.stop();
+            }
+        });
+
+        // --- SATELLITE DATA FETCH (MODIFIED) ---
+        async function getSatelliteData() {
+            spinEnabled = false;
+            map.stop(); 
+            
+            const locationInput = document.getElementById('locationInput').value.trim();
+            const resultsBox = document.getElementById('results-box');
+
+            resultsBox.innerHTML = '<p>🛑 Globe spin paused. Loading data...</p>';
+            
+            try {
+                const requestData = { location_input: locationInput };
+                
+                const response = await fetch('/get_data', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestData)
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    updateMap(data.results);
+                    displayResults(data.results);
+                } else {
+                    resultsBox.innerHTML = `<p class="error">Error: ${data.error || 'Failed to fetch data.'}</p>`;
+                }
+
+            } catch (error) {
+                resultsBox.innerHTML = `<p class="error">Network Error: ${error.message}. Ensure the Flask server is running and the input is valid.</p>`;
+            }
+        }
+
+        // --- MAP VISUALIZATION FUNCTIONS (same as before) ---
+        function updateMap(results) {
+            activeMarkers.forEach(item => {
+                if (item.remove) item.remove();
+            });
+            activeMarkers = [];
+            
+            let avgLat = 0, avgLon = 0;
+            let validPoints = results.filter(r => r.success);
+
+            if (validPoints.length === 0) return;
+
+            validPoints.forEach(r => {
+                avgLat += r.latitude;
+                avgLon += r.longitude;
+                
+                const el = document.createElement('div');
+                el.className = 'beam-marker';
+
+                const popupContent = `
+                    <p><span class="data-label">Temp:</span> ${r.temp}</p>
+                    <p><span class="data-label">CO:</span> ${r.co}</p>
+                    <p><span class="data-label">NO2:</span> ${r.no2}</p>
+                    <p><span class="data-label">O3:</span> ${r.o3}</p>
+                `;
+
+                const marker = new mapboxgl.Marker(el)
+                    .setLngLat([r.longitude, r.latitude])
+                    .setPopup(new mapboxgl.Popup().setHTML(popupContent))
+                    .addTo(map);
+                
+                activeMarkers.push(marker);
+
+                const satelliteOffset = 5;
+                const geojson = {
+                    'type': 'FeatureCollection',
+                    'features': [{
+                        'type': 'Feature',
+                        'geometry': {
+                            'type': 'LineString',
+                            'coordinates': [
+                                [r.longitude, r.latitude],
+                                [r.longitude + satelliteOffset, r.latitude + satelliteOffset]
+                            ]
+                        }
+                    }]
+                };
+
+                const lineId = `beam-${r.latitude}-${r.longitude}`;
+                
+                if (map.getLayer(lineId)) map.removeLayer(lineId);
+                if (map.getSource(lineId)) map.removeSource(lineId);
+                
+                map.addSource(lineId, { type: 'geojson', data: geojson });
+                map.addLayer({
+                    'id': lineId,
+                    'type': 'line',
+                    'source': lineId,
+                    'layout': { 'line-join': 'round', 'line-cap': 'round' },
+                    'paint': {
+                        'line-color': '#ff00ff',
+                        'line-width': 2,
+                        'line-dasharray': [1, 1]
+                    }
+                });
+                
+                activeMarkers.push({ remove: () => { 
+                    if (map.getLayer(lineId)) map.removeLayer(lineId);
+                    if (map.getSource(lineId)) map.removeSource(lineId);
+                } }); 
+            });
+
+            avgLat /= validPoints.length;
+            avgLon /= validPoints.length;
+            map.flyTo({ center: [avgLon, avgLat], zoom: 3, speed: 1.5 });
+        }
+
+        // --- RESULTS DISPLAY FUNCTION (MODIFIED) ---
+        function displayResults(results) {
+            const resultsBox = document.getElementById('results-box');
+            let html = '<p style="font-size: 1.2em; font-weight: bold; color: #66ccff;">🛰️ Data Retrieved Successfully!</p><hr>';
+            
+            results.forEach(data => {
+                if (data.success) {
+                    html += `
+                        <div class="location-result">
+                            <p>📍 Location: <b>${data.latitude}, ${data.longitude}</b></p>
+                            <p><span class="data-label">Temp:</span> ${data.temp}</p>
+                            <p><span class="data-label">Cloud Cover:</span> ${data.cloud_cover}</p>
+                            <p><span class="data-label">CO:</span> ${data.co}</p>
+                            <p><span class="data-label">NO2:</span> ${data.no2}</p>
+                            <p><span class="data-label">O3:</span> ${data.o3}</p>
+                            <p><span class="data-label">PM2.5:</span> ${data.pm2_5}</p>
+                            <p><span class="data-label">PM10:</span> ${data.pm10}</p>
+                            <p><span class="data-label">Aerosol Optical Depth:</span> ${data.aerosol_depth}</p>
+                            <p><span class="data-label">UV Index:</span> ${data.uv_index}</p>
+                        </div>
+                    `;
+                } else {
+                     html += `
+                        <div class="location-result">
+                            <p class="error">📍 Location: <b>${data.latitude}, ${data.longitude}</b> - Error:</p>
+                            <p>${data.error}</p>
+                        </div>
+                    `;
+                }
+            });
+            
+            resultsBox.innerHTML = html;
+        }
+    </script>
+</body>
+</html>
